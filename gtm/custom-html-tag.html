@@ -1,0 +1,99 @@
+<!--
+  GTM Custom HTML tag — Customer Scoring + Bot Filter
+  ---------------------------------------------------
+  Drop into a Custom HTML tag in GTM. Bind to triggers and set a GTM
+  variable named `eventType` per trigger (e.g. "page_view_financing").
+  This script also installs a tiny session-wide signal collector and a
+  honeypot link the first time it runs.
+-->
+<script>
+(function () {
+  var MIDDLEWARE_URL = 'https://YOUR-MIDDLEWARE.example.com/score';
+
+  // ----- 1. Signal collector (runs once per page load) -----
+  if (!window.__cs) {
+    window.__cs = {
+      loadedAt: Date.now(),
+      hasMouseMoved: false,
+      hasScrolled: false,
+      hasFocused: false,
+      honeypotClicked: false
+    };
+    addEventListener('mousemove', function () { window.__cs.hasMouseMoved = true; }, { once: true, passive: true });
+    addEventListener('scroll',    function () { window.__cs.hasScrolled = true;   }, { once: true, passive: true });
+    addEventListener('focus',     function () { window.__cs.hasFocused = true;    }, { once: true });
+    if (document.hasFocus && document.hasFocus()) window.__cs.hasFocused = true;
+
+    // Honeypot: invisible offscreen link bots will follow
+    try {
+      var hp = document.createElement('a');
+      hp.href = '/__cs_honeypot';
+      hp.setAttribute('aria-hidden', 'true');
+      hp.setAttribute('tabindex', '-1');
+      hp.style.cssText = 'position:absolute;left:-9999px;top:-9999px;width:1px;height:1px;opacity:0';
+      hp.textContent = 'do-not-click';
+      hp.addEventListener('click', function () { window.__cs.honeypotClicked = true; });
+      document.body && document.body.appendChild(hp);
+    } catch (e) { /* ignore */ }
+  }
+
+  // ----- 2. Stable anonymous cookie id -----
+  function getAnonId() {
+    var m = document.cookie.match(/(?:^|;\s*)cs_anon_id=([^;]+)/);
+    if (m) return m[1];
+    var id = 'a_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    document.cookie = 'cs_anon_id=' + id + '; path=/; max-age=' + (60 * 60 * 24 * 365);
+    return id;
+  }
+
+  // ----- 3. Customer id from Shopify -----
+  var customerId =
+    (window.__st && window.__st.cid) ||
+    (window.ShopifyAnalytics && window.ShopifyAnalytics.meta &&
+     window.ShopifyAnalytics.meta.page && window.ShopifyAnalytics.meta.page.customerId) ||
+    null;
+
+  // ----- 4. Build event_id for CAPI dedup with browser pixel -----
+  function uuid() {
+    return 'e_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+  }
+
+  // ----- 5. Build payload -----
+  var s = window.__cs || {};
+  var payload = {
+    customerId: customerId ? String(customerId) : undefined,
+    anonId: getAnonId(),
+    eventType: {{eventType}},
+    eventId: uuid(),
+    metadata: { url: location.href, referrer: document.referrer },
+    signals: {
+      hasMouseMoved: !!s.hasMouseMoved,
+      hasScrolled: !!s.hasScrolled,
+      hasFocused: !!s.hasFocused,
+      honeypotClicked: !!s.honeypotClicked,
+      dwellMs: Date.now() - (s.loadedAt || Date.now()),
+      isPrerender: !!document.prerendering,
+      webdriver: !!navigator.webdriver,
+      languagesLength: (navigator.languages || []).length,
+      timezone: (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone,
+      screenW: screen && screen.width,
+      screenH: screen && screen.height
+    }
+  };
+
+  // Expose event_id so the browser pixel (Meta/Pinterest) can dedupe with CAPI
+  window.dataLayer = window.dataLayer || [];
+  window.dataLayer.push({ event: 'cs_event', cs_event_id: payload.eventId });
+
+  try {
+    navigator.sendBeacon
+      ? navigator.sendBeacon(MIDDLEWARE_URL, new Blob([JSON.stringify(payload)], { type: 'application/json' }))
+      : fetch(MIDDLEWARE_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          keepalive: true
+        });
+  } catch (e) { /* swallow */ }
+})();
+</script>
